@@ -68,7 +68,7 @@ export async function checkHoneypot(tokenAddress: string): Promise<HoneypotResul
       };
     }
 
-    const data: HoneypotApiResponse = await response.json();
+    const data = (await response.json()) as HoneypotApiResponse;
 
     // ── Parse hasil ─────────────────────────────────────────────────────────
     const isHoneypot = data.honeypotResult?.isHoneypot ?? false;

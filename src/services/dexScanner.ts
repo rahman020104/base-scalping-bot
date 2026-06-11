@@ -93,7 +93,7 @@ export async function discoverNewTokens(): Promise<Token[]> {
     });
 
     if (boostRes.ok) {
-      const boosts: BoostEntry[] = await boostRes.json();
+      const boosts = (await boostRes.json()) as BoostEntry[];
       const baseBoosts = boosts.filter((b) => b.chainId === 'base');
 
       // Cari detail tiap boosted token via search
@@ -156,7 +156,7 @@ async function fetchPairByAddress(address: string): Promise<DexPair | null> {
 
   if (!res.ok) return null;
 
-  const data: SearchResponse = await res.json();
+  const data = (await res.json()) as SearchResponse;
   const pairs = data.pairs || [];
 
   // Ambil pair Base dengan liquidity tertinggi
@@ -179,7 +179,7 @@ async function searchPairs(query: string): Promise<DexPair[]> {
 
   if (!res.ok) return [];
 
-  const data: SearchResponse = await res.json();
+  const data = (await res.json()) as SearchResponse;
   return (data.pairs || []).filter((p) => p.chainId === 'base');
 }
 

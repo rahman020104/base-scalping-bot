@@ -1,0 +1,25 @@
+{
+  "name": "base-scalping-bot",
+  "version": "1.0.0",
+  "description": "Bot scalping otomatis di Base chain",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "trade": "ts-node src/index.ts trade",
+    "dry": "ts-node src/index.ts dry",
+    "summary": "ts-node src/index.ts summary",
+    "clear": "ts-node src/index.ts clear",
+    "dev": "ts-node src/index.ts trade"
+  },
+  "dependencies": {
+    "ethers": "^6.13.0",
+    "dotenv": "^16.4.5",
+    "winston": "^3.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.4.5",
+    "ts-node": "^10.9.2"
+  }
+}

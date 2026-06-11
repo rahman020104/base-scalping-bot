@@ -160,7 +160,7 @@ export async function evaluateIndicators(token: Token): Promise<IndicatorResult[
   const results: IndicatorResult[] = [
     indicatorVolumeSpike(token, extra),
     indicatorBuyPressure(token, extra),
-    indicatorLiquidityRange(token, extra),
+    indicatorLiquidityRange(token),
     indicatorPriceMovement(token, extra),
     indicatorHolderGrowth(token, extra),
   ];
