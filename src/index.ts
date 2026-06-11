@@ -87,6 +87,26 @@ function fmt(value: number, prefix = ''): string {
   return value > 0 ? `${prefix}${value.toFixed(2)}%` : `${value.toFixed(2)}%`;
 }
 
+// ─── Fetch harga dari DexScreener ────────────────────────────────────────────
+
+async function fetchPrice(address: string): Promise<number | null> {
+  try {
+    const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(address)}`;
+    const res = await fetch(url, {
+      headers: { 'Accept': 'application/json' },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const pair = (data.pairs || []).find((p: any) => p.chainId === 'base');
+    return pair ? parseFloat(pair.priceUsd || '0') : null;
+  } catch {
+    return null;
+  }
+}
+
+// ─── Command: summary ────────────────────────────────────────────────────────
+
 async function cmdSummary(): Promise<void> {
   const summary = getDryRunSummary();
 
@@ -121,42 +141,41 @@ async function cmdSummary(): Promise<void> {
 
   const recent = summary.records.slice(-15).reverse();
   console.log(`  📋 ${recent.length} Record Terakhir:`);
-  console.log(`  ──────────────────────────────────────────────────────────────`);
-  console.log(`  ${'Token'.padEnd(10)} ${'Result'.padStart(7)} ${'PnL%'.padStart(9)} ${'Alasan'.padEnd(30)}`);
-  console.log(`  ──────────────────────────────────────────────────────────────`);
+  console.log(`  ──────────────────────────────────────────────────────────────────────────`);
+  console.log(`  ${'Token'.padEnd(10)} ${'Result'.padStart(7)} ${'PnL%'.padStart(9)} ${'PnL $'.padStart(9)} ${'Alasan'.padEnd(30)}`);
+  console.log(`  ──────────────────────────────────────────────────────────────────────────`);
 
   for (const r of recent) {
     const symbol = (r.trade?.tokenSymbol || '?').padEnd(10);
     const result = (r.result === 'win' ? '✅ WIN' : r.result === 'loss' ? '❌ LOSS' : '⏳ OPEN').padStart(7);
-    const pnl = r.pnlPercent !== null
-      ? `${r.pnlPercent > 0 ? '+' : ''}${r.pnlPercent.toFixed(2)}%`.padStart(9)
-      : '   open  ';
+
+    // Untuk posisi open, fetch harga real-time
+    let pnlValue = r.pnlPercent;
+    if (r.result === 'open' && r.trade) {
+      const price = await fetchPrice(r.trade.tokenAddress);
+      const current = price ?? r.trade.entryPrice;
+      pnlValue = ((current - r.trade.entryPrice) / r.trade.entryPrice) * 100;
+    }
+
+    const pnlPct = pnlValue !== null
+      ? `${pnlValue > 0 ? '+' : ''}${pnlValue.toFixed(2)}%`.padStart(9)
+      : '   -  ';
+
+    // USD PnL = persentase * tradeAmount / 100
+    const pnlUsd = pnlValue !== null
+      ? `${pnlValue > 0 ? '+' : ''}$${(pnlValue * CONFIG.tradeAmountUsd / 100).toFixed(2)}`.padStart(9)
+      : '   -  ';
+
     const note = r.note.length > 35 ? r.note.slice(0, 32) + '...' : r.note;
-    console.log(`  ${symbol} ${result} ${pnl} ${note}`);
+    console.log(`  ${symbol} ${result} ${pnlPct} ${pnlUsd} ${note}`);
   }
-  console.log(`  ──────────────────────────────────────────────────────────────`);
+  console.log(`  ──────────────────────────────────────────────────────────────────────────`);
   console.log('');
 }
 
 // ─── Command: positions ──────────────────────────────────────────────────────
 
 async function cmdPositions(watch = false): Promise<void> {
-  const fetchPrice = async (address: string): Promise<number | null> => {
-    try {
-      const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(address)}`;
-      const res = await fetch(url, {
-        headers: { 'Accept': 'application/json' },
-        signal: AbortSignal.timeout(8_000),
-      });
-      if (!res.ok) return null;
-      const data: any = await res.json();
-      const pair = (data.pairs || []).find((p: any) => p.chainId === 'base');
-      return pair ? parseFloat(pair.priceUsd || '0') : null;
-    } catch {
-      return null;
-    }
-  };
-
   const render = async (): Promise<void> => {
     const records = getOpenRecords();
     if (records.length === 0) {
@@ -165,7 +184,7 @@ async function cmdPositions(watch = false): Promise<void> {
     }
 
     // Fetch harga terbaru
-    type Row = { symbol: string; entry: number; current: number; pnl: string; tp: number; sl: number; status: string };
+    type Row = { symbol: string; entry: number; current: number; pnlPct: string; pnlUsd: string; tp: number; sl: number; status: string };
     const rows: Row[] = [];
 
     for (const r of records) {
@@ -179,7 +198,8 @@ async function cmdPositions(watch = false): Promise<void> {
         symbol: r.trade.tokenSymbol,
         entry: r.trade.entryPrice,
         current,
-        pnl: `${pnl > 0 ? '+' : ''}${pnl.toFixed(2)}%`,
+        pnlPct: `${pnl > 0 ? '+' : ''}${pnl.toFixed(2)}%`,
+        pnlUsd: `${pnl > 0 ? '+' : ''}$${(pnl * CONFIG.tradeAmountUsd / 100).toFixed(2)}`,
         tp: r.trade.takeProfit,
         sl: r.trade.stopLoss,
         status: price === null ? '⏳' : pnl >= tpPct ? '🎯 TP' : pnl <= -slPct ? '🛑 SL' : '✅',
@@ -187,16 +207,17 @@ async function cmdPositions(watch = false): Promise<void> {
     }
 
     // Tabel
-    const sep = `  ────────── ────────── ────────── ────────── ────────── ────────`;
+    const sep = `  ────────── ────────── ────────── ────────── ────────── ────────── ────────`;
     console.log(`  ${sep}`);
-    console.log(`  ${'Token'.padEnd(10)} ${'Entry $'.padStart(10)} ${'Now $'.padStart(10)} ${'PnL%'.padStart(10)} ${'TP $'.padStart(10)} ${'SL $'.padStart(8)}`);
+    console.log(`  ${'Token'.padEnd(10)} ${'Entry $'.padStart(10)} ${'Now $'.padStart(10)} ${'PnL%'.padStart(10)} ${'PnL $'.padStart(9)} ${'TP $'.padStart(10)} ${'SL $'.padStart(8)}`);
     console.log(`  ${sep}`);
     for (const row of rows) {
       console.log(
         `  ${row.symbol.padEnd(10)} ` +
         `${row.entry.toFixed(4).padStart(10)} ` +
         `${row.current.toFixed(4).padStart(10)} ` +
-        `${(row.pnl).padStart(10)} ` +
+        `${(row.pnlPct).padStart(10)} ` +
+        `${(row.pnlUsd).padStart(9)} ` +
         `${row.tp.toFixed(4).padStart(10)} ` +
         `${row.sl.toFixed(4).padStart(8)}`
       );
