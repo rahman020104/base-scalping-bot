@@ -91,7 +91,7 @@ async function cmdWatchlist(): Promise<void> {
   console.log('╔══════════════════════════════════════════╗');
   console.log('║   Watchlist Manager — DRY RUN           ║');
   console.log('║   Discovery tiap 1 jam                  ║');
-  console.log('║   Entry check tiap 2 menit (otomatis)   ║');
+  console.log('║   Entry tiap 5 menit (close candle)        ║');
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
 

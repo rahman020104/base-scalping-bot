@@ -206,8 +206,8 @@ export function startWatchlistLoop(): void {
   runWatchlistCycle();
   discoveryId = setInterval(runWatchlistCycle, 60 * 60 * 1000);
 
-  // ENTRY: cek sinyal tiap 2 menit
-  entryId = setInterval(runEntryCheck, 2 * 60 * 1000);
+  // ENTRY: cek sinyal tiap 5 menit (tunggu close candle M5)
+  entryId = setInterval(runEntryCheck, 5 * 60 * 1000);
 }
 
 export function stopWatchlistLoop(): void {
