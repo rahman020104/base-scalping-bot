@@ -1,6 +1,8 @@
 import { Token } from '../types/index';
+import { CONFIG } from '../config/index';
 import { createContextLogger } from '../utils/logger';
 import { scanDippedTokens } from '../services/athScanner';
+import { checkHoneypot } from '../services/honeypotDetector';
 import {
   addToWatchlist,
   getWatchlist,
@@ -50,6 +52,24 @@ async function fetchFreshToken(address: string): Promise<Token | null> {
   }
 }
 
+// ─── Hitung jumlah candle 1 jam tersedia ────────────────────────────────────
+
+async function getCandleCount(pairAddress: string): Promise<number> {
+  try {
+    const url = `https://api.dexscreener.com/latest/dex/candles/base/${pairAddress}?res=60`;
+    const res = await fetch(url, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!res.ok) return 0;
+    const data: any = await res.json();
+    const raw: any[] = data.pairs?.[0]?.candles || [];
+    return raw.length;
+  } catch {
+    return 0;
+  }
+}
+
 // ─── Core cycle ─────────────────────────────────────────────────────────────
 
 export async function runWatchlistCycle(): Promise<void> {
@@ -63,12 +83,62 @@ export async function runWatchlistCycle(): Promise<void> {
   wmLog.info('=== WATCHLIST CYCLE START ===');
 
   try {
-    // ── Phase 1: DISCOVER ────────────────────────────────────────────────
-    wmLog.info('Phase 1: scan koin turun 40-50% dari ATH');
+    // =====================================================================
+    // === DISCOVERY ===
+    // =====================================================================
+    wmLog.info('DISCOVERY: scan koin turun 40-50% dari ATH');
     const dipped = await scanDippedTokens();
     wmLog.info(`Ditemukan ${dipped.length} koin turun 40-50%`);
 
+    // =====================================================================
+    // === FILTER ===
+    // =====================================================================
+    let lolosFilter = 0;
+    let gagalHoneypot = 0;
+    let gagalLikuiditas = 0;
+    let gagalVolume = 0;
+    let gagalHistory = 0;
+
     for (const d of dipped) {
+      let alasan: string | null = null;
+
+      // 1. Honeypot check
+      const hp = await checkHoneypot(d.address);
+      if (hp.isHoneypot) {
+        gagalHoneypot++;
+        wmLog.info(`FILTER ❌ ${d.symbol}: honeypot — ${hp.reason}`);
+        continue;
+      }
+
+      // 2. Liquidity > MIN_LIQUIDITY_USD
+      if (d.liquidityUsd < CONFIG.minLiquidityUsd) {
+        gagalLikuiditas++;
+        wmLog.info(`FILTER ❌ ${d.symbol}: likuiditas $${d.liquidityUsd} < $${CONFIG.minLiquidityUsd}`);
+        continue;
+      }
+
+      // 3. Volume 24h > MIN_VOLUME_24H
+      if (d.volume24h < CONFIG.minVolume24hUsd) {
+        gagalVolume++;
+        wmLog.info(`FILTER ❌ ${d.symbol}: volume $${d.volume24h} < $${CONFIG.minVolume24hUsd}`);
+        continue;
+      }
+
+      // 4. Minimal 48 candle 1 jam
+      const candleCount = await getCandleCount(d.pairAddress);
+      if (candleCount < 48) {
+        gagalHistory++;
+        wmLog.info(`FILTER ❌ ${d.symbol}: hanya ${candleCount} candle (min 48)`);
+        continue;
+      }
+
+      // Lolos semua filter
+      lolosFilter++;
+      wmLog.info(`FILTER ✅ ${d.symbol}: honeypot aman, likuiditas $${d.liquidityUsd}, volume $${d.volume24h}, ${candleCount} candle`);
+
+      // ===================================================================
+      // === WATCHLIST ===
+      // ===================================================================
       const token: Token = {
         address: d.address,
         name: d.name,
@@ -83,9 +153,15 @@ export async function runWatchlistCycle(): Promise<void> {
       await addToWatchlist(token, d.athPrice, d.pairAddress);
     }
 
-    // ── Phase 2: EVALUATE ────────────────────────────────────────────────
+    wmLog.info(
+      `FILTER: ${lolosFilter} lolos, ${gagalHoneypot} honeypot, ${gagalLikuiditas} likuiditas, ${gagalVolume} volume, ${gagalHistory} history`
+    );
+
+    // =====================================================================
+    // === MONITOR ===
+    // =====================================================================
     const watchlist = await getWatchlist();
-    wmLog.info(`Phase 2: evaluasi ${watchlist.length} item di watchlist`);
+    wmLog.info(`MONITOR: ${watchlist.length} item di watchlist`);
 
     let bought = 0;
 
@@ -102,25 +178,34 @@ export async function runWatchlistCycle(): Promise<void> {
       }
 
       const indicators = await evaluateIndicators(fresh);
-      const hijau = indicators.filter((i) => i.hijau).length;
+      const htf = indicators.find((i) => i.name === 'htfSignal');
+      const ltf = indicators.find((i) => i.name === 'ltfConfirm');
 
+      wmLog.info(
+        `${item.token.symbol}: HTF=${htf?.hijau ? '✅' : '❌'} LTF=${ltf?.hijau ? '✅' : '❌'}`
+      );
+
+      // ===================================================================
+      // === ENTRY ===
+      // ===================================================================
       if (!isReadyToBuy(indicators)) {
-        wmLog.info(`❌ Skip ${fresh.symbol}: ${hijau}/4 hijau`);
         continue;
       }
 
-      wmLog.info(`✅ Sinyal beli ${fresh.symbol}: ${hijau}/4 hijau`);
+      wmLog.info(`ENTRY ✅ ${fresh.symbol}: HTF + LTF confirmed`);
       const pos = await openPosition(fresh, indicators);
       if (pos) {
         bought++;
-        wmLog.info(`✅ BUY ${fresh.symbol} @ $${fresh.priceUsd}`);
+        wmLog.info(`ENTRY ✅ BUY ${fresh.symbol} @ $${fresh.priceUsd}`);
         await removeFromWatchlist(fresh.address);
         wmLog.info(`${fresh.symbol} dihapus dari watchlist`);
       }
     }
 
     const dur = Date.now() - startTime;
-    wmLog.info(`=== WATCHLIST CYCLE DONE (${dur}ms, ${bought} posisi baru) ===`);
+    wmLog.info(
+      `=== WATCHLIST CYCLE DONE (${dur}ms, ${lolosFilter} watchlist, ${bought} entry) ===`
+    );
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     wmLog.error(`Watchlist cycle error: ${msg}`);
