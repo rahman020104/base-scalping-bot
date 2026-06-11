@@ -1,182 +1,231 @@
-// ============================================================
-// Indicators — 5 sinyal scalping untuk token baru < 24 jam
-// ============================================================
-
 import { Token, IndicatorResult } from '../types/index';
-import { validateAddress } from '../utils/helpers';
 import { createContextLogger } from '../utils/logger';
 
 const indLog = createContextLogger('indicators');
 
-// ─── Tipe data tambahan dari DexScreener ─────────────────────────────────────
+// ─── Candle type ──────────────────────────────────────────────────────────────
 
-interface ExtraData {
-  priceChangeM5: number;
-  priceChangeH1: number;
-  buysM5: number;
-  sellsM5: number;
-  totalBuysH24: number;
-  totalSellsH24: number;
+interface Candle {
+  timestamp: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
 }
 
-// ─── Fetch data tambahan ─────────────────────────────────────────────────────
+// ─── Fetch candles 1 jam dari DexScreener ────────────────────────────────────
 
-async function fetchExtraData(tokenAddress: string): Promise<ExtraData | null> {
+async function fetchCandles(tokenAddress: string): Promise<Candle[] | null> {
   try {
-    const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(tokenAddress)}`;
-    const res = await fetch(url, {
-      headers: { 'Accept': 'application/json' },
-      signal: AbortSignal.timeout(8_000),
+    const searchUrl = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(tokenAddress)}`;
+    const searchRes = await fetch(searchUrl, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
     });
-    if (!res.ok) return null;
+    if (!searchRes.ok) return null;
 
-    const data: any = await res.json();
-    const pairs: any[] = data.pairs || [];
+    const searchData: any = await searchRes.json();
+    const pairs: any[] = searchData.pairs || [];
     const basePair = pairs.find((p: any) => p.chainId === 'base');
-    if (!basePair) return null;
+    if (!basePair?.pairAddress) return null;
 
-    return {
-      priceChangeM5: basePair.priceChange?.m5 ?? 0,
-      priceChangeH1: basePair.priceChange?.h1 ?? 0,
-      buysM5: basePair.txns?.m5?.buys ?? 0,
-      sellsM5: basePair.txns?.m5?.sells ?? 0,
-      totalBuysH24: basePair.txns?.h24?.buys ?? 0,
-      totalSellsH24: basePair.txns?.h24?.sells ?? 0,
-    };
+    const pairAddress = basePair.pairAddress;
+    const candlesUrl = `https://api.dexscreener.com/latest/dex/candles/base/${pairAddress}?res=60`;
+
+    const candlesRes = await fetch(candlesUrl, {
+      headers: { Accept: 'application/json' },
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!candlesRes.ok) return null;
+
+    const candlesData: any = await candlesRes.json();
+    const rawCandles: any[] = candlesData.pairs?.[0]?.candles || [];
+    if (rawCandles.length < 20) return null;
+
+    return rawCandles.map((c: any) => ({
+      timestamp: c.timestamp,
+      open: parseFloat(c.open),
+      high: parseFloat(c.high),
+      low: parseFloat(c.low),
+      close: parseFloat(c.close),
+      volume: parseFloat(c.volume),
+    }));
   } catch {
     return null;
   }
 }
 
-// ─── Indikator 1: Volume Spike ───────────────────────────────────────────────
+// ─── Indikator 1: Fibonacci ──────────────────────────────────────────────────
 
-function indicatorVolumeSpike(token: Token, extra: ExtraData | null): IndicatorResult {
-  // Volume spike > 200% dalam 5 menit relatif ke volume 1 jam
-  if (!extra) {
-    // Fallback: liquidity ratio tinggi = aktivitas tinggi
-    const ratio = token.liquidityUsd > 0 ? token.volume24h / token.liquidityUsd : 0;
-    return {
-      name: 'volumeSpike',
-      value: Math.round(ratio * 100) / 100,
-      hijau: ratio > 2,
-    };
+function indicatorFibonacci(candles: Candle[]): IndicatorResult {
+  const high = Math.max(...candles.map((c) => c.high));
+  const low = Math.min(...candles.map((c) => c.low));
+  const diff = high - low;
+
+  if (diff === 0) {
+    return { name: 'fibonacci', value: 0, hijau: false };
   }
 
-  const totalM5 = extra.buysM5 + extra.sellsM5;
-  const spike = totalM5 > 0;
+  const levels = {
+    '0.382': high - diff * 0.382,
+    '0.5': high - diff * 0.5,
+    '0.618': high - diff * 0.618,
+    '0.786': high - diff * 0.786,
+  };
+
+  const currentPrice = candles[candles.length - 1].close;
+  const ratio = (currentPrice - low) / diff;
+  const inZone = currentPrice >= levels['0.618'] && currentPrice <= levels['0.786'];
 
   return {
-    name: 'volumeSpike',
-    value: totalM5,
-    hijau: spike,
+    name: 'fibonacci',
+    value: Math.round(ratio * 1000) / 1000,
+    hijau: inZone,
   };
 }
 
-// ─── Indikator 2: Buy Pressure ───────────────────────────────────────────────
+// ─── Indikator 2: Parabolic SAR ──────────────────────────────────────────────
 
-function indicatorBuyPressure(_token: Token, extra: ExtraData | null): IndicatorResult {
-  if (!extra) {
-    return { name: 'buyPressure', value: 0, hijau: false };
+function indicatorParabolicSAR(candles: Candle[]): IndicatorResult {
+  if (candles.length < 2) {
+    return { name: 'parabolicSAR', value: 0, hijau: false };
   }
 
-  const totalM5 = extra.buysM5 + extra.sellsM5;
-  if (totalM5 === 0) {
-    return { name: 'buyPressure', value: 0, hijau: false };
+  const first = candles[0];
+  const second = candles[1];
+  let isUp = second.close >= first.close;
+  let ep = isUp
+    ? Math.max(first.high, second.high)
+    : Math.min(first.low, second.low);
+  let sar = isUp
+    ? Math.min(first.low, second.low)
+    : Math.max(first.high, second.high);
+  let af = 0.02;
+
+  for (let i = 2; i < candles.length; i++) {
+    const c = candles[i];
+
+    if (isUp) {
+      if (c.low < sar) {
+        isUp = false;
+        sar = ep;
+        ep = c.low;
+        af = 0.02;
+      } else {
+        sar = sar + af * (ep - sar);
+        if (i >= 2) {
+          sar = Math.min(sar, candles[i - 1].low, candles[i - 2].low);
+        } else {
+          sar = Math.min(sar, candles[i - 1].low);
+        }
+        if (c.high > ep) {
+          ep = c.high;
+          af = Math.min(af + 0.02, 0.2);
+        }
+      }
+    } else {
+      if (c.high > sar) {
+        isUp = true;
+        sar = ep;
+        ep = c.high;
+        af = 0.02;
+      } else {
+        sar = sar + af * (ep - sar);
+        if (i >= 2) {
+          sar = Math.max(sar, candles[i - 1].high, candles[i - 2].high);
+        } else {
+          sar = Math.max(sar, candles[i - 1].high);
+        }
+        if (c.low < ep) {
+          ep = c.low;
+          af = Math.min(af + 0.02, 0.2);
+        }
+      }
+    }
   }
 
-  const pressure = (extra.buysM5 / totalM5) * 100;
+  const currentPrice = candles[candles.length - 1].close;
+
   return {
-    name: 'buyPressure',
-    value: Math.round(pressure * 100) / 100,
-    hijau: pressure > 60,
+    name: 'parabolicSAR',
+    value: Math.round(sar * 1e8) / 1e8,
+    hijau: currentPrice > sar,
   };
 }
 
-// ─── Indikator 3: Liquidity Range ────────────────────────────────────────────
+// ─── Indikator 3: Bollinger Bands ────────────────────────────────────────────
 
-function indicatorLiquidityRange(token: Token): IndicatorResult {
-  const inRange = token.liquidityUsd >= 10_000 && token.liquidityUsd <= 500_000;
+function indicatorBollingerBands(candles: Candle[]): IndicatorResult {
+  if (candles.length < 20) {
+    return { name: 'bollingerBands', value: 0, hijau: false };
+  }
+
+  const period = 20;
+  const recent = candles.slice(-period);
+  const closes = recent.map((c) => c.close);
+  const sma = closes.reduce((a, b) => a + b, 0) / period;
+  const variance = closes.reduce((sum, val) => sum + (val - sma) ** 2, 0) / period;
+  const std = Math.sqrt(variance);
+  const lower = sma - 2 * std;
+  const currentPrice = candles[candles.length - 1].close;
 
   return {
-    name: 'liquidityRange',
-    value: token.liquidityUsd,
-    hijau: inRange,
+    name: 'bollingerBands',
+    value: Math.round(lower * 1e8) / 1e8,
+    hijau: currentPrice <= lower,
   };
 }
 
-// ─── Indikator 4: Price Movement ─────────────────────────────────────────────
+// ─── Indikator 4: Volume Confirm ─────────────────────────────────────────────
 
-function indicatorPriceMovement(token: Token, extra: ExtraData | null): IndicatorResult {
-  if (!extra) {
-    // Fallback: harga > 0 = ada pergerakan
-    return {
-      name: 'priceMovement',
-      value: token.priceUsd > 0 ? 1 : 0,
-      hijau: token.priceUsd > 0,
-    };
+function indicatorVolumeConfirm(candles: Candle[]): IndicatorResult {
+  if (candles.length < 20) {
+    return { name: 'volumeConfirm', value: 0, hijau: false };
   }
 
-  // Pergerakan 20-100% dalam 1 jam = momentum bagus (belum terlambat)
-  const changeH1 = Math.abs(extra.priceChangeH1);
-  const inRange = changeH1 >= 20 && changeH1 <= 100;
+  const recent = candles.slice(-20);
+  const currentVol = recent[recent.length - 1].volume;
+  const avgVol = recent.slice(0, -1).reduce((sum, c) => sum + c.volume, 0) / (recent.length - 1);
 
   return {
-    name: 'priceMovement',
-    value: changeH1,
-    hijau: inRange,
-  };
-}
-
-// ─── Indikator 5: Holder Growth ──────────────────────────────────────────────
-
-function indicatorHolderGrowth(_token: Token, extra: ExtraData | null): IndicatorResult {
-  // Holder growth > 10% per jam — kita gak punya historical holder data.
-  // Proxy: kalau ada transaksi di 5 menit terakhir = ada minat baru.
-  if (!extra) {
-    return { name: 'holderGrowth', value: 0, hijau: false };
-  }
-
-  const totalM5 = extra.buysM5 + extra.sellsM5;
-  const growth = totalM5 > 0 ? 1 : 0;
-
-  return {
-    name: 'holderGrowth',
-    value: growth,
-    hijau: growth > 0,
+    name: 'volumeConfirm',
+    value: avgVol > 0 ? Math.round((currentVol / avgVol) * 100) / 100 : 0,
+    hijau: currentVol > avgVol,
   };
 }
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
-/**
- * Hitung 5 indikator scalping untuk satu token.
- * Fetch data tambahan dari DexScreener untuk indikator yang butuh
- * price change, transaction counts, dll.
- */
 export async function evaluateIndicators(token: Token): Promise<IndicatorResult[]> {
-  // Fetch data tambahan (gagal diam-diam kalo error)
-  const extra = await fetchExtraData(token.address);
+  const candles = await fetchCandles(token.address);
+
+  if (!candles) {
+    indLog.warn(`${token.symbol}: candle data tidak tersedia, semua indikator merah`);
+    return [
+      { name: 'fibonacci', value: 0, hijau: false },
+      { name: 'parabolicSAR', value: 0, hijau: false },
+      { name: 'bollingerBands', value: 0, hijau: false },
+      { name: 'volumeConfirm', value: 0, hijau: false },
+    ];
+  }
 
   const results: IndicatorResult[] = [
-    indicatorVolumeSpike(token, extra),
-    indicatorBuyPressure(token, extra),
-    indicatorLiquidityRange(token),
-    indicatorPriceMovement(token, extra),
-    indicatorHolderGrowth(token, extra),
+    indicatorFibonacci(candles),
+    indicatorParabolicSAR(candles),
+    indicatorBollingerBands(candles),
+    indicatorVolumeConfirm(candles),
   ];
 
   const hijauCount = results.filter((r) => r.hijau).length;
   indLog.info(
-    `${token.symbol}: ${hijauCount}/5 hijau ` +
-    results.map((r) => `${r.name}=${r.hijau ? '✅' : '❌'}`).join(' ')
+    `${token.symbol}: ${hijauCount}/4 hijau ` +
+      results.map((r) => `${r.name}=${r.hijau ? '✅' : '❌'}`).join(' ')
   );
 
   return results;
 }
 
-/**
- * Cek apakah token siap dibeli (min 3 dari 5 indikator hijau).
- */
 export function isReadyToBuy(indicators: IndicatorResult[]): boolean {
   if (indicators.length === 0) return false;
   const hijau = indicators.filter((i) => i.hijau).length;

@@ -27,7 +27,10 @@ src/
 │   ├── honeypotDetector.ts  # Cek scam token via honeypot.is API
 │   ├── indicators.ts        # 5 sinyal scalping (≥3/5 to buy)
 │   ├── executor.ts          # Buy/sell via Uniswap V2 Router
-│   └── monitor.ts           # Polling harga tiap 30s, auto TP/SL
+│   ├── monitor.ts           # Polling harga tiap 30s, auto TP/SL
+│   ├── watchlist.ts         # Simpan/load daftar koin watchlist
+│   ├── athScanner.ts        # Scan koin turun 40-50% dari ATH
+│   └── fibonacci.ts         # Hitung level fibonacci low→ATH
 └── core/
     ├── tradeManager.ts      # Manajemen posisi (max N, open/close)
     ├── scanner.ts           # Orchestrator: scan → filter → trade
