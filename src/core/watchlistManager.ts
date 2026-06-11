@@ -22,7 +22,8 @@ function cli(msg: string): void {
   wmLog.info(msg.replace(/\x1b\[[0-9;]*m/g, ''));
 }
 
-let loopId: ReturnType<typeof setInterval> | null = null;
+let discoveryId: ReturnType<typeof setInterval> | null = null;
+let entryId: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
 
 // ─── Fresh price dari DexScreener ───────────────────────────────────────────
@@ -75,23 +76,22 @@ async function getCandleCount(pairAddress: string): Promise<number> {
   }
 }
 
-// ─── Core cycle ─────────────────────────────────────────────────────────────
+// ─── Discovery cycle (tiap 1 jam) ──────────────────────────────────────────
 
 export async function runWatchlistCycle(): Promise<void> {
   if (isRunning) {
-    wmLog.warn('Cycle masih berjalan, skip');
+    wmLog.warn('Discovery masih berjalan, skip');
     return;
   }
 
   isRunning = true;
   const startTime = Date.now();
-  cli('=== WATCHLIST CYCLE START ===');
+  cli('=== DISCOVERY CYCLE ===');
 
   try {
     // =====================================================================
     // === DISCOVERY ===
     // =====================================================================
-    cli('DISCOVERY: scan koin turun 40-50% dari ATH');
     const dipped = await scanDippedTokens();
     cli(`Ditemukan ${dipped.length} koin turun 40-50%`);
 
@@ -129,7 +129,6 @@ export async function runWatchlistCycle(): Promise<void> {
 
       // Lolos semua filter
       lolosFilter++;
-      cli(`FILTER ✅ ${d.symbol}: honeypot aman, likuiditas $${d.liquidityUsd}, volume $${d.volume24h}`);
 
       // ===================================================================
       // === WATCHLIST ===
@@ -146,82 +145,81 @@ export async function runWatchlistCycle(): Promise<void> {
         decimals: 18,
       };
       await addToWatchlist(token, d.athPrice, d.pairAddress);
+      cli(`WATCHLIST ✅ ${d.symbol}: ditambahkan (likuiditas $${d.liquidityUsd}, volume $${d.volume24h})`);
     }
 
-    cli(`FILTER: ${lolosFilter} lolos, ${gagalHoneypot} honeypot, ${gagalLikuiditas} likuiditas, ${gagalVolume} volume`);
-
-    // =====================================================================
-    // === MONITOR ===
-    // =====================================================================
-    const watchlist = await getWatchlist();
-    cli(`MONITOR: ${watchlist.length} item di watchlist`);
-
-    let bought = 0;
-
-    for (const item of watchlist) {
-      if (!canOpenPosition()) {
-        wmLog.info(`Posisi penuh (${getActivePositions().length}), stop`);
-        break;
-      }
-
-      const fresh = await fetchFreshToken(item.token.address);
-      if (!fresh || fresh.priceUsd <= 0) {
-        wmLog.warn(`${item.token.symbol}: gagal fetch harga, skip`);
-        continue;
-      }
-
-      const indicators = await evaluateIndicators(fresh);
-      const htf = indicators.find((i) => i.name === 'htfSignal');
-      const ltf = indicators.find((i) => i.name === 'ltfConfirm');
-
-      cli(`${item.token.symbol}: HTF=${htf?.hijau ? '✅' : '❌'} LTF=${ltf?.hijau ? '✅' : '❌'}`);
-
-      // ===================================================================
-      // === ENTRY ===
-      // ===================================================================
-      if (!isReadyToBuy(indicators)) {
-        continue;
-      }
-
-      cli(`ENTRY ✅ ${fresh.symbol}: HTF + LTF confirmed`);
-      const pos = await openPosition(fresh, indicators);
-      if (pos) {
-        bought++;
-        cli(`ENTRY ✅ BUY ${fresh.symbol} @ $${fresh.priceUsd}`);
-        await removeFromWatchlist(fresh.address);
-        cli(`${fresh.symbol} dihapus dari watchlist`);
-      }
-    }
+    cli(`DISCOVERY DONE: ${lolosFilter} watchlist baru, ${gagalHoneypot} honeypot, ${gagalLikuiditas} likuiditas, ${gagalVolume} volume`);
 
     const dur = Date.now() - startTime;
-    cli(`=== WATCHLIST CYCLE DONE (${dur}ms, ${lolosFilter} watchlist, ${bought} entry) ===`);
+    cli(`=== DISCOVERY DONE (${dur}ms) ===`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
-    wmLog.error(`Watchlist cycle error: ${msg}`);
+    wmLog.error(`Discovery cycle error: ${msg}`);
   } finally {
     isRunning = false;
   }
 }
 
-// ─── Loop otomatis tiap 1 jam ──────────────────────────────────────────────
+// ─── Entry check (tiap 2 menit) ────────────────────────────────────────────
+
+export async function runEntryCheck(): Promise<void> {
+  try {
+    const watchlist = await getWatchlist();
+    if (watchlist.length === 0) return;
+
+    for (const item of watchlist) {
+      if (!canOpenPosition()) break;
+
+      const fresh = await fetchFreshToken(item.token.address);
+      if (!fresh || fresh.priceUsd <= 0) continue;
+
+      const indicators = await evaluateIndicators(fresh);
+      const htf = indicators.find((i) => i.name === 'htfSignal');
+      const ltf = indicators.find((i) => i.name === 'ltfConfirm');
+
+      if (!isReadyToBuy(indicators)) continue;
+
+      cli(`ENTRY ✅ ${fresh.symbol}: HTF=${htf?.hijau} LTF=${ltf?.hijau} @ $${fresh.priceUsd}`);
+      const pos = await openPosition(fresh, indicators);
+      if (pos) {
+        cli(`ENTRY ✅ BUY ${fresh.symbol} @ $${fresh.priceUsd}`);
+        await removeFromWatchlist(fresh.address);
+      }
+    }
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    wmLog.error(`Entry check error: ${msg}`);
+  }
+}
+
+// ─── Loop otomatis ─────────────────────────────────────────────────────────
 
 export function startWatchlistLoop(): void {
-  if (loopId) {
+  if (discoveryId) {
     wmLog.warn('Watchlist loop sudah berjalan');
     return;
   }
 
-  wmLog.info('Mulai watchlist loop tiap 1 jam');
+  wmLog.info('Mulai discovery tiap 1 jam + entry check tiap 2 menit');
+
+  // DISCOVERY: scan + filter + watchlist tiap 1 jam
   runWatchlistCycle();
-  loopId = setInterval(runWatchlistCycle, 60 * 60 * 1000);
+  discoveryId = setInterval(runWatchlistCycle, 60 * 60 * 1000);
+
+  // ENTRY: cek sinyal tiap 2 menit
+  entryId = setInterval(runEntryCheck, 2 * 60 * 1000);
 }
 
 export function stopWatchlistLoop(): void {
-  if (loopId) {
-    clearInterval(loopId);
-    loopId = null;
-    wmLog.info('Watchlist loop dihentikan');
+  if (discoveryId) {
+    clearInterval(discoveryId);
+    discoveryId = null;
   }
+  if (entryId) {
+    clearInterval(entryId);
+    entryId = null;
+  }
+  wmLog.info('Watchlist loop dihentikan');
 }
 
 export default { runWatchlistCycle, startWatchlistLoop, stopWatchlistLoop };

@@ -12,7 +12,7 @@
 import { CONFIG } from './config/index';
 import { logger } from './utils/logger';
 import { runCycle, startScanLoop, stopScanLoop } from './core/scanner';
-import { runWatchlistCycle } from './core/watchlistManager';
+import { runWatchlistCycle, startWatchlistLoop, stopWatchlistLoop } from './core/watchlistManager';
 import { getDryRunSummary, clearDryRun, getOpenRecords } from './core/dryRun';
 
 // ─── Banner ──────────────────────────────────────────────────────────────────
@@ -90,12 +90,23 @@ async function cmdWatchlist(): Promise<void> {
   console.log('');
   console.log('╔══════════════════════════════════════════╗');
   console.log('║   Watchlist Manager — DRY RUN           ║');
-  console.log('║   Scan koreksi 40-50%, filter, watch    ║');
+  console.log('║   Discovery tiap 1 jam                  ║');
+  console.log('║   Entry check tiap 2 menit (otomatis)   ║');
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
 
-  await runWatchlistCycle();
-  process.exit(0);
+  startWatchlistLoop();
+
+  process.on('SIGINT', () => {
+    console.log('\n🛑 Shutting down...');
+    stopWatchlistLoop();
+    process.exit(0);
+  });
+
+  process.on('SIGTERM', () => {
+    stopWatchlistLoop();
+    process.exit(0);
+  });
 }
 
 // ─── Command: summary ────────────────────────────────────────────────────────
