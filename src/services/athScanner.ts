@@ -30,7 +30,10 @@ const SEARCH_API = 'https://api.dexscreener.com/latest/dex/search';
 const BOOST_API = 'https://api.dexscreener.com/token-boosts/top/v1';
 const CANDLES_API = 'https://api.dexscreener.com/latest/dex/candles/base';
 
-const SEARCH_KEYWORDS = ['base', 'coinbase', 'aerodrome', 'usdc', 'weth'];
+const SEARCH_KEYWORDS = [
+  'base', 'coinbase', 'aerodrome', 'usdc', 'weth',
+  'cbBTC', 'morpho', 'aave', 'uniswap',
+];
 
 // ─── Fetch boosted tokens ──────────────────────────────────────────────────
 
@@ -204,7 +207,7 @@ export async function scanDippedTokens(): Promise<ScannedToken[]> {
   athLog.info(`${valid.length} token valid dengan harga > 0`);
 
   const results: ScannedToken[] = [];
-  const batchSize = 10;
+  const batchSize = 25;
 
   for (let i = 0; i < valid.length; i += batchSize) {
     const batch = valid.slice(i, i + batchSize);

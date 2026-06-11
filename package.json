@@ -8,6 +8,7 @@
     "start": "node dist/index.js",
     "trade": "ts-node src/index.ts trade",
     "dry": "ts-node src/index.ts dry",
+    "watchlist": "ts-node src/index.ts watchlist",
     "summary": "ts-node src/index.ts summary",
     "positions": "ts-node src/index.ts positions",
     "watch": "ts-node src/index.ts positions --watch",

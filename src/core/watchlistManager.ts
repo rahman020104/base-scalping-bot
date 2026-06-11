@@ -17,6 +17,11 @@ import {
 
 const wmLog = createContextLogger('watchlistMgr');
 
+function cli(msg: string): void {
+  console.log(`  ${msg}`);
+  wmLog.info(msg.replace(/\x1b\[[0-9;]*m/g, ''));
+}
+
 let loopId: ReturnType<typeof setInterval> | null = null;
 let isRunning = false;
 
@@ -80,15 +85,15 @@ export async function runWatchlistCycle(): Promise<void> {
 
   isRunning = true;
   const startTime = Date.now();
-  wmLog.info('=== WATCHLIST CYCLE START ===');
+  cli('=== WATCHLIST CYCLE START ===');
 
   try {
     // =====================================================================
     // === DISCOVERY ===
     // =====================================================================
-    wmLog.info('DISCOVERY: scan koin turun 40-50% dari ATH');
+    cli('DISCOVERY: scan koin turun 40-50% dari ATH');
     const dipped = await scanDippedTokens();
-    wmLog.info(`Ditemukan ${dipped.length} koin turun 40-50%`);
+    cli(`Ditemukan ${dipped.length} koin turun 40-50%`);
 
     // =====================================================================
     // === FILTER ===
@@ -97,44 +102,34 @@ export async function runWatchlistCycle(): Promise<void> {
     let gagalHoneypot = 0;
     let gagalLikuiditas = 0;
     let gagalVolume = 0;
-    let gagalHistory = 0;
 
     for (const d of dipped) {
-      let alasan: string | null = null;
 
       // 1. Honeypot check
       const hp = await checkHoneypot(d.address);
       if (hp.isHoneypot) {
         gagalHoneypot++;
-        wmLog.info(`FILTER ❌ ${d.symbol}: honeypot — ${hp.reason}`);
+        cli(`FILTER ❌ ${d.symbol}: honeypot — ${hp.reason}`);
         continue;
       }
 
       // 2. Liquidity > MIN_LIQUIDITY_USD
       if (d.liquidityUsd < CONFIG.minLiquidityUsd) {
         gagalLikuiditas++;
-        wmLog.info(`FILTER ❌ ${d.symbol}: likuiditas $${d.liquidityUsd} < $${CONFIG.minLiquidityUsd}`);
+        cli(`FILTER ❌ ${d.symbol}: likuiditas $${d.liquidityUsd} < $${CONFIG.minLiquidityUsd}`);
         continue;
       }
 
       // 3. Volume 24h > MIN_VOLUME_24H
       if (d.volume24h < CONFIG.minVolume24hUsd) {
         gagalVolume++;
-        wmLog.info(`FILTER ❌ ${d.symbol}: volume $${d.volume24h} < $${CONFIG.minVolume24hUsd}`);
-        continue;
-      }
-
-      // 4. Minimal 48 candle 1 jam
-      const candleCount = await getCandleCount(d.pairAddress);
-      if (candleCount < 48) {
-        gagalHistory++;
-        wmLog.info(`FILTER ❌ ${d.symbol}: hanya ${candleCount} candle (min 48)`);
+        cli(`FILTER ❌ ${d.symbol}: volume $${d.volume24h} < $${CONFIG.minVolume24hUsd}`);
         continue;
       }
 
       // Lolos semua filter
       lolosFilter++;
-      wmLog.info(`FILTER ✅ ${d.symbol}: honeypot aman, likuiditas $${d.liquidityUsd}, volume $${d.volume24h}, ${candleCount} candle`);
+      cli(`FILTER ✅ ${d.symbol}: honeypot aman, likuiditas $${d.liquidityUsd}, volume $${d.volume24h}`);
 
       // ===================================================================
       // === WATCHLIST ===
@@ -153,15 +148,13 @@ export async function runWatchlistCycle(): Promise<void> {
       await addToWatchlist(token, d.athPrice, d.pairAddress);
     }
 
-    wmLog.info(
-      `FILTER: ${lolosFilter} lolos, ${gagalHoneypot} honeypot, ${gagalLikuiditas} likuiditas, ${gagalVolume} volume, ${gagalHistory} history`
-    );
+    cli(`FILTER: ${lolosFilter} lolos, ${gagalHoneypot} honeypot, ${gagalLikuiditas} likuiditas, ${gagalVolume} volume`);
 
     // =====================================================================
     // === MONITOR ===
     // =====================================================================
     const watchlist = await getWatchlist();
-    wmLog.info(`MONITOR: ${watchlist.length} item di watchlist`);
+    cli(`MONITOR: ${watchlist.length} item di watchlist`);
 
     let bought = 0;
 
@@ -181,9 +174,7 @@ export async function runWatchlistCycle(): Promise<void> {
       const htf = indicators.find((i) => i.name === 'htfSignal');
       const ltf = indicators.find((i) => i.name === 'ltfConfirm');
 
-      wmLog.info(
-        `${item.token.symbol}: HTF=${htf?.hijau ? '✅' : '❌'} LTF=${ltf?.hijau ? '✅' : '❌'}`
-      );
+      cli(`${item.token.symbol}: HTF=${htf?.hijau ? '✅' : '❌'} LTF=${ltf?.hijau ? '✅' : '❌'}`);
 
       // ===================================================================
       // === ENTRY ===
@@ -192,20 +183,18 @@ export async function runWatchlistCycle(): Promise<void> {
         continue;
       }
 
-      wmLog.info(`ENTRY ✅ ${fresh.symbol}: HTF + LTF confirmed`);
+      cli(`ENTRY ✅ ${fresh.symbol}: HTF + LTF confirmed`);
       const pos = await openPosition(fresh, indicators);
       if (pos) {
         bought++;
-        wmLog.info(`ENTRY ✅ BUY ${fresh.symbol} @ $${fresh.priceUsd}`);
+        cli(`ENTRY ✅ BUY ${fresh.symbol} @ $${fresh.priceUsd}`);
         await removeFromWatchlist(fresh.address);
-        wmLog.info(`${fresh.symbol} dihapus dari watchlist`);
+        cli(`${fresh.symbol} dihapus dari watchlist`);
       }
     }
 
     const dur = Date.now() - startTime;
-    wmLog.info(
-      `=== WATCHLIST CYCLE DONE (${dur}ms, ${lolosFilter} watchlist, ${bought} entry) ===`
-    );
+    cli(`=== WATCHLIST CYCLE DONE (${dur}ms, ${lolosFilter} watchlist, ${bought} entry) ===`);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     wmLog.error(`Watchlist cycle error: ${msg}`);

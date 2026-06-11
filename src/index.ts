@@ -12,6 +12,7 @@
 import { CONFIG } from './config/index';
 import { logger } from './utils/logger';
 import { runCycle, startScanLoop, stopScanLoop } from './core/scanner';
+import { runWatchlistCycle } from './core/watchlistManager';
 import { getDryRunSummary, clearDryRun, getOpenRecords } from './core/dryRun';
 
 // ─── Banner ──────────────────────────────────────────────────────────────────
@@ -78,6 +79,22 @@ async function cmdDry(): Promise<void> {
   await runCycle();
 
   // Langsung exit — gak usah nunggu monitoring
+  process.exit(0);
+}
+
+// ─── Command: watchlist ───────────────────────────────────────────────────────
+
+async function cmdWatchlist(): Promise<void> {
+  process.env.DRY_RUN = 'true';
+
+  console.log('');
+  console.log('╔══════════════════════════════════════════╗');
+  console.log('║   Watchlist Manager — DRY RUN           ║');
+  console.log('║   Scan koreksi 40-50%, filter, watch    ║');
+  console.log('╚══════════════════════════════════════════╝');
+  console.log('');
+
+  await runWatchlistCycle();
   process.exit(0);
 }
 
@@ -249,6 +266,10 @@ async function main(): Promise<void> {
       await cmdDry();
       break;
 
+    case 'watchlist':
+      await cmdWatchlist();
+      break;
+
     case 'summary':
       await cmdSummary();
       break;
@@ -271,6 +292,7 @@ async function main(): Promise<void> {
   Commands:
     trade       Jalankan scanner + monitoring
     dry         Scan sekali (dry run)
+    watchlist   Strategi koreksi 40-50% (dry run)
     positions   Lihat posisi aktif
     positions --watch  Pantau posisi tiap 30 detik
     summary     Tampilkan hasil dry-run

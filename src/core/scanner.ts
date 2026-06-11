@@ -96,11 +96,11 @@ cli(`Ditemukan ${tokens.length} token qualified`);
 
       if (!isReadyToBuy(indicators)) {
         const hijau = indicators.filter((i) => i.hijau).length;
-        cli(`  ❌ Skip: hanya ${hijau}/5 indikator hijau`);
+        cli(`  ❌ Skip: hanya ${hijau}/6 indikator hijau`);
         continue;
       }
 
-      cli(`  ✅ Sinyal beli: ${indicators.filter((i) => i.hijau).length}/5 hijau`);
+      cli(`  ✅ Sinyal beli: ${indicators.filter((i) => i.hijau).length}/6 hijau`);
 
       // ── 3c. EXECUTE ────────────────────────────────────────────────
       cli(`💰 BUY SIGNAL: ${token.symbol} @ $${token.priceUsd}`);
