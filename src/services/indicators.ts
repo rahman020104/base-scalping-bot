@@ -14,36 +14,47 @@ interface Candle {
   volume: number;
 }
 
-// ─── Fetch candles 1 jam dari DexScreener ────────────────────────────────────
+interface PSARResult {
+  values: number[];
+  lastUpFlip: number | null;
+}
 
-async function fetchCandles(tokenAddress: string): Promise<Candle[] | null> {
+interface BBResult {
+  upper: number;
+  mid: number;
+  lower: number;
+}
+
+// ─── Fetch helpers ────────────────────────────────────────────────────────────
+
+async function getPairAddress(tokenAddress: string): Promise<string | null> {
+  const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(tokenAddress)}`;
+  const res = await fetch(url, {
+    headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(10_000),
+  });
+  if (!res.ok) return null;
+  const data: any = await res.json();
+  const pairs: any[] = data.pairs || [];
+  const basePair = pairs.find((p: any) => p.chainId === 'base');
+  return basePair?.pairAddress ?? null;
+}
+
+async function fetchCandlesByPair(
+  pairAddress: string,
+  resolution: string
+): Promise<Candle[] | null> {
   try {
-    const searchUrl = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(tokenAddress)}`;
-    const searchRes = await fetch(searchUrl, {
+    const url = `https://api.dexscreener.com/latest/dex/candles/base/${pairAddress}?res=${resolution}`;
+    const res = await fetch(url, {
       headers: { Accept: 'application/json' },
       signal: AbortSignal.timeout(10_000),
     });
-    if (!searchRes.ok) return null;
-
-    const searchData: any = await searchRes.json();
-    const pairs: any[] = searchData.pairs || [];
-    const basePair = pairs.find((p: any) => p.chainId === 'base');
-    if (!basePair?.pairAddress) return null;
-
-    const pairAddress = basePair.pairAddress;
-    const candlesUrl = `https://api.dexscreener.com/latest/dex/candles/base/${pairAddress}?res=60`;
-
-    const candlesRes = await fetch(candlesUrl, {
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(10_000),
-    });
-    if (!candlesRes.ok) return null;
-
-    const candlesData: any = await candlesRes.json();
-    const rawCandles: any[] = candlesData.pairs?.[0]?.candles || [];
-    if (rawCandles.length < 20) return null;
-
-    return rawCandles.map((c: any) => ({
+    if (!res.ok) return null;
+    const data: any = await res.json();
+    const raw: any[] = data.pairs?.[0]?.candles || [];
+    if (raw.length < 2) return null;
+    return raw.map((c: any) => ({
       timestamp: c.timestamp,
       open: parseFloat(c.open),
       high: parseFloat(c.high),
@@ -54,6 +65,96 @@ async function fetchCandles(tokenAddress: string): Promise<Candle[] | null> {
   } catch {
     return null;
   }
+}
+
+async function fetchCandles(tokenAddress: string): Promise<Candle[] | null> {
+  const pairAddress = await getPairAddress(tokenAddress);
+  if (!pairAddress) return null;
+  const candles = await fetchCandlesByPair(pairAddress, '60');
+  if (!candles || candles.length < 20) return null;
+  return candles;
+}
+
+// ─── Shared calculators ──────────────────────────────────────────────────────
+
+function calcPSAR(candles: Candle[]): PSARResult {
+  if (candles.length < 2) return { values: [], lastUpFlip: null };
+
+  const values: number[] = [];
+  const first = candles[0];
+  const second = candles[1];
+  let isUp = second.close >= first.close;
+  let ep = isUp
+    ? Math.max(first.high, second.high)
+    : Math.min(first.low, second.low);
+  let sar = isUp
+    ? Math.min(first.low, second.low)
+    : Math.max(first.high, second.high);
+  let lastUpFlip: number | null = null;
+  let af = 0.02;
+
+  values.push(0);
+  values.push(Math.round(sar * 1e8) / 1e8);
+
+  for (let i = 2; i < candles.length; i++) {
+    const c = candles[i];
+
+    if (isUp) {
+      if (c.low < sar) {
+        isUp = false;
+        sar = ep;
+        ep = c.low;
+        af = 0.02;
+      } else {
+        sar = sar + af * (ep - sar);
+        if (i >= 2) {
+          sar = Math.min(sar, candles[i - 1].low, candles[i - 2].low);
+        } else {
+          sar = Math.min(sar, candles[i - 1].low);
+        }
+        if (c.high > ep) {
+          ep = c.high;
+          af = Math.min(af + 0.02, 0.2);
+        }
+      }
+    } else {
+      if (c.high > sar) {
+        isUp = true;
+        sar = ep;
+        ep = c.high;
+        af = 0.02;
+        lastUpFlip = i;
+      } else {
+        sar = sar + af * (ep - sar);
+        if (i >= 2) {
+          sar = Math.max(sar, candles[i - 1].high, candles[i - 2].high);
+        } else {
+          sar = Math.max(sar, candles[i - 1].high);
+        }
+        if (c.low < ep) {
+          ep = c.low;
+          af = Math.min(af + 0.02, 0.2);
+        }
+      }
+    }
+
+    values.push(Math.round(sar * 1e8) / 1e8);
+  }
+
+  return { values, lastUpFlip };
+}
+
+function calcBB(candles: Candle[], period: number): BBResult {
+  const closes = candles.map((c) => c.close);
+  const recent = closes.slice(-period);
+  const sma = recent.reduce((a, b) => a + b, 0) / period;
+  const variance = recent.reduce((sum, val) => sum + (val - sma) ** 2, 0) / period;
+  const std = Math.sqrt(variance);
+  return {
+    upper: sma + 2 * std,
+    mid: sma,
+    lower: sma - 2 * std,
+  };
 }
 
 // ─── Indikator 1: Fibonacci ──────────────────────────────────────────────────
@@ -88,69 +189,16 @@ function indicatorFibonacci(candles: Candle[]): IndicatorResult {
 // ─── Indikator 2: Parabolic SAR ──────────────────────────────────────────────
 
 function indicatorParabolicSAR(candles: Candle[]): IndicatorResult {
-  if (candles.length < 2) {
+  const psar = calcPSAR(candles);
+  if (psar.values.length < 2) {
     return { name: 'parabolicSAR', value: 0, hijau: false };
   }
-
-  const first = candles[0];
-  const second = candles[1];
-  let isUp = second.close >= first.close;
-  let ep = isUp
-    ? Math.max(first.high, second.high)
-    : Math.min(first.low, second.low);
-  let sar = isUp
-    ? Math.min(first.low, second.low)
-    : Math.max(first.high, second.high);
-  let af = 0.02;
-
-  for (let i = 2; i < candles.length; i++) {
-    const c = candles[i];
-
-    if (isUp) {
-      if (c.low < sar) {
-        isUp = false;
-        sar = ep;
-        ep = c.low;
-        af = 0.02;
-      } else {
-        sar = sar + af * (ep - sar);
-        if (i >= 2) {
-          sar = Math.min(sar, candles[i - 1].low, candles[i - 2].low);
-        } else {
-          sar = Math.min(sar, candles[i - 1].low);
-        }
-        if (c.high > ep) {
-          ep = c.high;
-          af = Math.min(af + 0.02, 0.2);
-        }
-      }
-    } else {
-      if (c.high > sar) {
-        isUp = true;
-        sar = ep;
-        ep = c.high;
-        af = 0.02;
-      } else {
-        sar = sar + af * (ep - sar);
-        if (i >= 2) {
-          sar = Math.max(sar, candles[i - 1].high, candles[i - 2].high);
-        } else {
-          sar = Math.max(sar, candles[i - 1].high);
-        }
-        if (c.low < ep) {
-          ep = c.low;
-          af = Math.min(af + 0.02, 0.2);
-        }
-      }
-    }
-  }
-
+  const lastSAR = psar.values[psar.values.length - 1];
   const currentPrice = candles[candles.length - 1].close;
-
   return {
     name: 'parabolicSAR',
-    value: Math.round(sar * 1e8) / 1e8,
-    hijau: currentPrice > sar,
+    value: lastSAR,
+    hijau: currentPrice > lastSAR,
   };
 }
 
@@ -161,19 +209,13 @@ function indicatorBollingerBands(candles: Candle[]): IndicatorResult {
     return { name: 'bollingerBands', value: 0, hijau: false };
   }
 
-  const period = 20;
-  const recent = candles.slice(-period);
-  const closes = recent.map((c) => c.close);
-  const sma = closes.reduce((a, b) => a + b, 0) / period;
-  const variance = closes.reduce((sum, val) => sum + (val - sma) ** 2, 0) / period;
-  const std = Math.sqrt(variance);
-  const lower = sma - 2 * std;
+  const bb = calcBB(candles, 20);
   const currentPrice = candles[candles.length - 1].close;
 
   return {
     name: 'bollingerBands',
-    value: Math.round(lower * 1e8) / 1e8,
-    hijau: currentPrice <= lower,
+    value: Math.round(bb.lower * 1e8) / 1e8,
+    hijau: currentPrice <= bb.lower,
   };
 }
 
@@ -195,31 +237,94 @@ function indicatorVolumeConfirm(candles: Candle[]): IndicatorResult {
   };
 }
 
+// ─── Indikator 5: HTF Signal (1 jam) ────────────────────────────────────────
+// SAR baru flip + titik SAR pertama setelah flip < Lower BB(21)
+
+function indicatorHTF(candles: Candle[]): IndicatorResult {
+  if (candles.length < 22) {
+    return { name: 'htfSignal', value: 0, hijau: false };
+  }
+
+  const psar = calcPSAR(candles);
+  const bb21 = calcBB(candles, 21);
+
+  const lastIdx = candles.length - 1;
+  const flipBaru = psar.lastUpFlip !== null && (lastIdx - psar.lastUpFlip) <= 1;
+  if (!flipBaru) {
+    return { name: 'htfSignal', value: 0, hijau: false };
+  }
+
+  const sarFlip = psar.values[psar.lastUpFlip!];
+  const hijau = sarFlip < bb21.lower;
+
+  return {
+    name: 'htfSignal',
+    value: Math.round(sarFlip * 1e8) / 1e8,
+    hijau,
+  };
+}
+
+// ─── Indikator 6: LTF Confirmation (5 menit) ────────────────────────────────
+// Cek SAR flip di M5
+
+async function indicatorLTF(pairAddress: string): Promise<IndicatorResult> {
+  try {
+    const candles = await fetchCandlesByPair(pairAddress, '5');
+    if (!candles || candles.length < 10) {
+      return { name: 'ltfConfirm', value: 0, hijau: false };
+    }
+
+    const psar = calcPSAR(candles);
+    if (psar.values.length < 2) {
+      return { name: 'ltfConfirm', value: 0, hijau: false };
+    }
+
+    const lastSAR = psar.values[psar.values.length - 1];
+    const currentPrice = candles[candles.length - 1].close;
+    const hijau = currentPrice > lastSAR;
+
+    return {
+      name: 'ltfConfirm',
+      value: hijau ? 1 : 0,
+      hijau,
+    };
+  } catch {
+    return { name: 'ltfConfirm', value: 0, hijau: false };
+  }
+}
+
 // ─── Public API ──────────────────────────────────────────────────────────────
 
 export async function evaluateIndicators(token: Token): Promise<IndicatorResult[]> {
   const candles = await fetchCandles(token.address);
 
   if (!candles) {
-    indLog.warn(`${token.symbol}: candle data tidak tersedia, semua indikator merah`);
+    indLog.warn(`${token.symbol}: candle data tidak tersedia`);
     return [
       { name: 'fibonacci', value: 0, hijau: false },
       { name: 'parabolicSAR', value: 0, hijau: false },
       { name: 'bollingerBands', value: 0, hijau: false },
       { name: 'volumeConfirm', value: 0, hijau: false },
+      { name: 'htfSignal', value: 0, hijau: false },
+      { name: 'ltfConfirm', value: 0, hijau: false },
     ];
   }
+
+  const pairAddress = await getPairAddress(token.address);
+  const ltf = pairAddress ? await indicatorLTF(pairAddress) : { name: 'ltfConfirm', value: 0, hijau: false };
 
   const results: IndicatorResult[] = [
     indicatorFibonacci(candles),
     indicatorParabolicSAR(candles),
     indicatorBollingerBands(candles),
     indicatorVolumeConfirm(candles),
+    indicatorHTF(candles),
+    ltf,
   ];
 
   const hijauCount = results.filter((r) => r.hijau).length;
   indLog.info(
-    `${token.symbol}: ${hijauCount}/4 hijau ` +
+    `${token.symbol}: ${hijauCount}/6 hijau ` +
       results.map((r) => `${r.name}=${r.hijau ? '✅' : '❌'}`).join(' ')
   );
 
@@ -227,9 +332,14 @@ export async function evaluateIndicators(token: Token): Promise<IndicatorResult[
 }
 
 export function isReadyToBuy(indicators: IndicatorResult[]): boolean {
-  if (indicators.length === 0) return false;
-  const hijau = indicators.filter((i) => i.hijau).length;
-  return hijau >= 3;
+  if (indicators.length < 6) return false;
+
+  const htf = indicators.find((i) => i.name === 'htfSignal');
+  const ltf = indicators.find((i) => i.name === 'ltfConfirm');
+
+  if (!htf || !ltf) return false;
+
+  return htf.hijau === true && ltf.hijau === true;
 }
 
 export default evaluateIndicators;
