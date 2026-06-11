@@ -2,6 +2,7 @@
 // DexScanner — Cari token baru < 24 jam dari DexScreener
 // ============================================================
 
+import { CONFIG } from '../config/index';
 import { Token } from '../types/index';
 import { logger, createContextLogger } from '../utils/logger';
 import { validateAddress } from '../utils/helpers';
@@ -34,13 +35,6 @@ interface SearchResponse {
   pairs: DexPair[] | null;
 }
 
-// ─── Filter thresholds ───────────────────────────────────────────────────────
-
-const MIN_LIQUIDITY = 10_000;
-const MAX_LIQUIDITY = 500_000;
-const MIN_VOLUME = 50_000;
-const MAX_AGE_HOURS = 24;
-
 // ─── Converter ───────────────────────────────────────────────────────────────
 
 function toToken(pair: DexPair): Token {
@@ -62,10 +56,10 @@ function toToken(pair: DexPair): Token {
 
 function isQualified(token: Token): boolean {
   return (
-    token.liquidityUsd >= MIN_LIQUIDITY &&
-    token.liquidityUsd <= MAX_LIQUIDITY &&
-    token.volume24h >= MIN_VOLUME &&
-    token.ageHours <= MAX_AGE_HOURS
+    token.liquidityUsd >= CONFIG.minLiquidityUsd &&
+    token.liquidityUsd <= CONFIG.maxLiquidityUsd &&
+    token.volume24h >= CONFIG.minVolume24hUsd &&
+    token.ageHours <= CONFIG.maxTokenAgeHours
   );
 }
 

@@ -20,7 +20,7 @@ const UNISWAP_V2_ROUTER = '0x4752ba5dbc23f44d87826276bf6fd6b1c372ad24';
 const WETH_ADDRESS = '0x4200000000000000000000000000000000000006';
 const BASE_CHAIN_ID = 8453;
 const DEADLINE_MINUTES = 20;
-const MAX_SLIPPAGE_BPS = 500; // 5%
+const MAX_SLIPPAGE_BPS = CONFIG.maxSlippagePercent * 100;
 
 const ROUTER_ABI = [
   'function swapExactETHForTokens(uint amountOutMin, address[] calldata path, address to, uint deadline) external payable returns (uint[] memory amounts)',

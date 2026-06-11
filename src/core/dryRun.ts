@@ -200,6 +200,13 @@ export function getDryRunSummary(): DryRunSummary {
 }
 
 /**
+ * Dapatkan semua record yang masih open.
+ */
+export function getOpenRecords(): DryRunRecord[] {
+  return readRecords().filter((r) => r.result === 'open');
+}
+
+/**
  * Bersihkan semua record dry-run.
  */
 export function clearDryRun(): void {

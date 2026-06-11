@@ -21,6 +21,14 @@ import { openPosition, canOpenPosition, getActivePositions } from './tradeManage
 
 const scanLog = createContextLogger('scanner');
 
+// ─── CLI output helper ───────────────────────────────────────────────────────
+// Log ke console (biar user liat) + file (buat debugging)
+
+function cli(msg: string): void {
+  console.log(`  ${msg}`);
+  scanLog.info(msg.replace(/\x1b\[[0-9;]*m/g, '')); // strip ANSI for file log
+}
+
 // ─── State ───────────────────────────────────────────────────────────────────
 
 let scanIntervalId: ReturnType<typeof setInterval> | null = null;
@@ -40,25 +48,25 @@ export async function runCycle(): Promise<void> {
 
   isScanning = true;
   const startTime = Date.now();
-  scanLog.info('=== SCAN CYCLE START ===');
+  cli('=== SCAN CYCLE START ===');
 
   try {
     // ── 1. Cek kapasitas ─────────────────────────────────────────────────
     if (!canOpenPosition()) {
-      scanLog.info('Skip: 2 posisi sudah aktif');
+      cli(`Skip: ${CONFIG.maxPositions} posisi sudah aktif`);
       return;
     }
 
-    const slotTersedia = 2 - getActivePositions().length;
-    scanLog.info(`Slot tersedia: ${slotTersedia}`);
+    const slotTersedia = CONFIG.maxPositions - getActivePositions().length;
+    cli(`Slot tersedia: ${slotTersedia}`);
 
     // ── 2. DISCOVER — ambil token baru ──────────────────────────────────
-    scanLog.info('🔍 Discovering new tokens...');
+    cli('🔍 Discovering new tokens...');
     const tokens = await discoverNewTokens();
-    scanLog.info(`Ditemukan ${tokens.length} token qualified`);
+cli(`Ditemukan ${tokens.length} token qualified`);
 
     if (tokens.length === 0) {
-      scanLog.info('Tidak ada token baru untuk dicek');
+      cli('Tidak ada token baru untuk dicek');
       return;
     }
 
@@ -72,50 +80,66 @@ export async function runCycle(): Promise<void> {
       }
 
       // ── 3a. HONEYPOT CHECK ─────────────────────────────────────────
-      scanLog.info(`🛡️  Check honeypot: ${token.symbol} (${token.address})`);
+      cli(`🛡️  Check honeypot: ${token.symbol}`);
       const hp = await checkHoneypot(token.address);
 
       if (hp.isHoneypot) {
-        scanLog.warn(`  ❌ HONEYPOT: ${token.symbol} — ${hp.reason}`);
+        cli(`  ❌ HONEYPOT: ${token.symbol} — ${hp.reason}`);
         continue;
       }
 
-      scanLog.info(`  ✅ Aman: buyTax=${hp.buyTax}%, sellTax=${hp.sellTax}%`);
+      cli(`  ✅ Aman: buyTax=${hp.buyTax}%, sellTax=${hp.sellTax}%`);
 
       // ── 3b. INDICATORS ─────────────────────────────────────────────
-      scanLog.info(`📊 Evaluate indicators: ${token.symbol}`);
+      cli(`📊 Evaluate indicators: ${token.symbol}`);
       const indicators = await evaluateIndicators(token);
 
       if (!isReadyToBuy(indicators)) {
         const hijau = indicators.filter((i) => i.hijau).length;
-        scanLog.info(`  ❌ Skip: hanya ${hijau}/5 indikator hijau`);
+        cli(`  ❌ Skip: hanya ${hijau}/5 indikator hijau`);
         continue;
       }
 
-      scanLog.info(`  ✅ Sinyal beli: ${indicators.filter((i) => i.hijau).length}/5 hijau`);
+      cli(`  ✅ Sinyal beli: ${indicators.filter((i) => i.hijau).length}/5 hijau`);
 
       // ── 3c. EXECUTE ────────────────────────────────────────────────
-      scanLog.info(`💰 BUY SIGNAL: ${token.symbol} @ $${token.priceUsd}`);
+      cli(`💰 BUY SIGNAL: ${token.symbol} @ $${token.priceUsd}`);
       const position = await openPosition(token, indicators);
 
       if (position) {
         bought++;
-        scanLog.info(
-          `  ✅ POSISI DIBUKA: ${token.symbol} | ` +
-          `entry $${token.priceUsd} | TP $${position.takeProfit} | SL $${position.stopLoss}`
-        );
+        cli(`  ✅ POSISI DIBUKA: ${token.symbol} | entry $${token.priceUsd} | TP $${position.takeProfit} | SL $${position.stopLoss}`);
       } else {
-        scanLog.warn(`  ❌ Gagal buka posisi: ${token.symbol}`);
+        cli(`  ❌ Gagal buka posisi: ${token.symbol}`);
       }
     }
 
     // ── Ringkasan ────────────────────────────────────────────────────────
     const duration = Date.now() - startTime;
-    scanLog.info(
-      `=== SCAN CYCLE DONE (${duration}ms) === ` +
-      `Token dicek: ${tokens.length}, Posisi dibuka: ${bought}, ` +
-      `Aktif: ${getActivePositions().length}/2`
-    );
+    cli(`=== SCAN CYCLE DONE (${duration}ms) ===`);
+
+    // ── Tabel posisi aktif ────────────────────────────────────────────────
+    const positions = getActivePositions();
+    if (positions.length > 0) {
+      const header = `  ${'Token'.padEnd(10)} ${'Entry $'.padStart(10)} ${'TP $'.padStart(10)} ${'SL $'.padStart(10)} ${'Status'.padStart(8)}`;
+      const sep = `  ${'─'.repeat(10)} ${'─'.repeat(10)} ${'─'.repeat(10)} ${'─'.repeat(10)} ${'─'.repeat(8)}`;
+      console.log(`  ${sep}`);
+      console.log(`  ${header}`);
+      console.log(`  ${sep}`);
+      for (const p of positions) {
+        console.log(
+          `  ${p.tokenSymbol.padEnd(10)} ` +
+          `${p.entryPrice.toFixed(4).padStart(10)} ` +
+          `${p.takeProfit.toFixed(4).padStart(10)} ` +
+          `${p.stopLoss.toFixed(4).padStart(10)} ` +
+          `${p.status.padStart(8)}`
+        );
+      }
+      console.log(`  ${sep}`);
+      console.log(`  Total: ${positions.length}/${CONFIG.maxPositions} posisi | ${bought} baru dibuka`);
+    } else {
+      console.log(`  Tidak ada posisi aktif.`);
+    }
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     scanLog.error(`Scan cycle error: ${msg}`);
@@ -136,15 +160,15 @@ export function startScanLoop(): void {
     return;
   }
 
-  scanLog.info(`Mulai scan loop tiap ${CONFIG.minLiquidityUsd ? '15' : '15'} menit`);
+  scanLog.info(`Mulai scan loop tiap ${CONFIG.scanIntervalMinutes} menit`);
 
   // Jalan langsung sekali
   runCycle();
 
-  // Terus tiap 15 menit
+  // Terus tiap ${CONFIG.scanIntervalMinutes} menit
   scanIntervalId = setInterval(() => {
     runCycle();
-  }, 15 * 60 * 1000);
+  }, CONFIG.scanIntervalMinutes * 60 * 1000);
 }
 
 /**

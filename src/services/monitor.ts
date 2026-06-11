@@ -2,6 +2,7 @@
 // Monitor — Pantau harga posisi aktif tiap 30 detik
 // ============================================================
 
+import { CONFIG } from '../config/index';
 import { TradePosition } from '../types/index';
 import { validateAddress } from '../utils/helpers';
 import { logger, createContextLogger } from '../utils/logger';
@@ -199,7 +200,7 @@ export function startMonitoring(
     } catch (err) {
       monLog.error(`Error monitoring ${position.tokenSymbol}: ${String(err)}`);
     }
-  }, 30_000);
+  }, CONFIG.monitorIntervalSeconds * 1000);
 
   // Return fungsi buat stop manual
   return () => {

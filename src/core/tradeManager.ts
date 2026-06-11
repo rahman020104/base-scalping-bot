@@ -23,13 +23,11 @@ const stopMonitors: Map<string, () => void> = new Map();
 // ─── Hitung TP/SL ────────────────────────────────────────────────────────────
 
 function calculateTakeProfit(entryPrice: number): number {
-  // TP: +150% dari entry
-  return entryPrice * 2.5;
+  return entryPrice * (1 + CONFIG.tpPercent / 100);
 }
 
 function calculateStopLoss(entryPrice: number): number {
-  // SL: -30% dari entry
-  return entryPrice * 0.7;
+  return entryPrice * (1 - CONFIG.slPercent / 100);
 }
 
 // ─── Buka posisi ─────────────────────────────────────────────────────────────
@@ -52,8 +50,8 @@ export async function openPosition(
   indicators?: IndicatorResult[]
 ): Promise<TradePosition | null> {
   // ── Cek limit posisi ────────────────────────────────────────────────────
-  if (activePositions.size >= 2) {
-    mgrLog.warn(`Tolak ${token.symbol}: sudah 2 posisi aktif`);
+  if (activePositions.size >= CONFIG.maxPositions) {
+    mgrLog.warn(`Tolak ${token.symbol}: sudah ${CONFIG.maxPositions} posisi aktif`);
     return null;
   }
 
@@ -185,7 +183,7 @@ export function getActivePositions(): TradePosition[] {
  * Cek apakah masih bisa buka posisi baru.
  */
 export function canOpenPosition(): boolean {
-  return activePositions.size < 2;
+  return activePositions.size < CONFIG.maxPositions;
 }
 
 /**

@@ -12,7 +12,7 @@
 import { CONFIG } from './config/index';
 import { logger } from './utils/logger';
 import { runCycle, startScanLoop, stopScanLoop } from './core/scanner';
-import { getDryRunSummary, clearDryRun } from './core/dryRun';
+import { getDryRunSummary, clearDryRun, getOpenRecords } from './core/dryRun';
 
 // ─── Banner ──────────────────────────────────────────────────────────────────
 
@@ -28,8 +28,8 @@ function showBanner(): void {
   console.log(`║  Chain:  Base (8453)                    ║`);
   console.log(`║  Modal:  $200                          ║`);
   console.log(`║  Trade:  $${CONFIG.tradeAmountUsd}/pos                    ║`);
-  console.log(`║  Max:    2 posisi                      ║`);
-  console.log(`║  TP:     +150% | SL: -30%              ║`);
+  console.log(`║  Max:    ${CONFIG.maxPositions} posisi                      ║`);
+  console.log(`║  TP:     +${CONFIG.tpPercent}% | SL: -${CONFIG.slPercent}%              ║`);
   console.log(`╚══════════════════════════════════════════╝`);
   console.log('');
 }
@@ -67,21 +67,25 @@ async function cmdDry(): Promise<void> {
   // Override jadi DRY RUN
   process.env.DRY_RUN = 'true';
 
-  // Reload — sederhana, re-assign dari env
-  const dryConfig = { ...CONFIG, dryRun: true };
-
   console.log('');
   console.log('╔══════════════════════════════════════════╗');
   console.log('║     ⚠️  DRY RUN MODE FORCED              ║');
-  console.log('║  Semua transaksi hanya simulasi          ║');
+  console.log('║  Scan sekali, exit — gak monitoring      ║');
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
 
-  // Jalankan scanner dalam mode dry
+  // Jalankan scanner dalam mode dry (1 siklus doang)
   await runCycle();
+
+  // Langsung exit — gak usah nunggu monitoring
+  process.exit(0);
 }
 
 // ─── Command: summary ────────────────────────────────────────────────────────
+
+function fmt(value: number, prefix = ''): string {
+  return value > 0 ? `${prefix}${value.toFixed(2)}%` : `${value.toFixed(2)}%`;
+}
 
 async function cmdSummary(): Promise<void> {
   const summary = getDryRunSummary();
@@ -91,38 +95,129 @@ async function cmdSummary(): Promise<void> {
   console.log('║        Dry Run Summary                   ║');
   console.log('╚══════════════════════════════════════════╝');
   console.log('');
-  console.log(`  Total Trades:   ${summary.totalTrades}`);
-  console.log(`  ○ Wins:         ${summary.wins}`);
-  console.log(`  ● Losses:       ${summary.losses}`);
-  console.log(`  Win Rate:       ${summary.winRate}%`);
-  console.log(`  Total PnL:      ${summary.totalPnL > 0 ? '+' : ''}${summary.totalPnL}%`);
-  console.log(`  Avg PnL/Trade:  ${summary.avgPnL > 0 ? '+' : ''}${summary.avgPnL}%`);
+
+  // ── Stats ──────────────────────────────────────────────────────────────
+  const barW = Math.round(summary.winRate / 5);
+  const barL = 20 - barW;
+  const winBar = '█'.repeat(Math.max(0, barW));
+  const lossBar = '░'.repeat(Math.max(0, barL));
+
+  console.log(`  📊 Performance`);
+  console.log(`  ──────────────────────────────────`);
+  console.log(`  Total Trades    ${summary.totalTrades}`);
+  console.log(`  ✅ Wins         ${summary.wins}`);
+  console.log(`  ❌ Losses       ${summary.losses}`);
+  console.log(`  🎯 Win Rate     ${summary.winRate}%  ${winBar}${lossBar}`);
+  console.log(`  💰 Total PnL    ${fmt(summary.totalPnL, '+')}`);
+  console.log(`  📈 Avg/Trade    ${fmt(summary.avgPnL, '+')}`);
   console.log('');
 
+  // ── Riwayat ────────────────────────────────────────────────────────────
   if (summary.records.length === 0) {
     console.log('  (Belum ada record dry-run)');
     console.log('');
     return;
   }
 
-  // Tampilkan 10 record terakhir
-  const recent = summary.records.slice(-10).reverse();
-  console.log('  10 Record Terakhir:');
-  console.log('  ────────────────────────────────────────────────');
+  const recent = summary.records.slice(-15).reverse();
+  console.log(`  📋 ${recent.length} Record Terakhir:`);
+  console.log(`  ──────────────────────────────────────────────────────────────`);
+  console.log(`  ${'Token'.padEnd(10)} ${'Result'.padStart(7)} ${'PnL%'.padStart(9)} ${'Alasan'.padEnd(30)}`);
+  console.log(`  ──────────────────────────────────────────────────────────────`);
+
   for (const r of recent) {
-    const emoji = r.result === 'win' ? '✅' : r.result === 'loss' ? '❌' : '⏳';
-    const pnl = r.pnlPercent !== null ? `${r.pnlPercent > 0 ? '+' : ''}${r.pnlPercent.toFixed(2)}%` : 'open';
-    const time = new Date(r.timestamp).toLocaleString('id-ID');
-    console.log(`  ${emoji} ${r.trade?.tokenSymbol || '?'} | ${pnl} | ${r.note.slice(0, 60)} | ${time}`);
+    const symbol = (r.trade?.tokenSymbol || '?').padEnd(10);
+    const result = (r.result === 'win' ? '✅ WIN' : r.result === 'loss' ? '❌ LOSS' : '⏳ OPEN').padStart(7);
+    const pnl = r.pnlPercent !== null
+      ? `${r.pnlPercent > 0 ? '+' : ''}${r.pnlPercent.toFixed(2)}%`.padStart(9)
+      : '   open  ';
+    const note = r.note.length > 35 ? r.note.slice(0, 32) + '...' : r.note;
+    console.log(`  ${symbol} ${result} ${pnl} ${note}`);
   }
-  console.log('  ────────────────────────────────────────────────');
+  console.log(`  ──────────────────────────────────────────────────────────────`);
   console.log('');
+}
+
+// ─── Command: positions ──────────────────────────────────────────────────────
+
+async function cmdPositions(watch = false): Promise<void> {
+  const fetchPrice = async (address: string): Promise<number | null> => {
+    try {
+      const url = `https://api.dexscreener.com/latest/dex/search?q=${encodeURIComponent(address)}`;
+      const res = await fetch(url, {
+        headers: { 'Accept': 'application/json' },
+        signal: AbortSignal.timeout(8_000),
+      });
+      if (!res.ok) return null;
+      const data: any = await res.json();
+      const pair = (data.pairs || []).find((p: any) => p.chainId === 'base');
+      return pair ? parseFloat(pair.priceUsd || '0') : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const render = async (): Promise<void> => {
+    const records = getOpenRecords();
+    if (records.length === 0) {
+      console.log('  Tidak ada posisi aktif.');
+      return;
+    }
+
+    // Fetch harga terbaru
+    type Row = { symbol: string; entry: number; current: number; pnl: string; tp: number; sl: number; status: string };
+    const rows: Row[] = [];
+
+    for (const r of records) {
+      if (!r.trade) continue;
+      const price = await fetchPrice(r.trade.tokenAddress);
+      const current = price ?? r.trade.entryPrice;
+      const pnl = ((current - r.trade.entryPrice) / r.trade.entryPrice) * 100;
+      const tpPct = CONFIG.tpPercent;
+      const slPct = CONFIG.slPercent;
+      rows.push({
+        symbol: r.trade.tokenSymbol,
+        entry: r.trade.entryPrice,
+        current,
+        pnl: `${pnl > 0 ? '+' : ''}${pnl.toFixed(2)}%`,
+        tp: r.trade.takeProfit,
+        sl: r.trade.stopLoss,
+        status: price === null ? '⏳' : pnl >= tpPct ? '🎯 TP' : pnl <= -slPct ? '🛑 SL' : '✅',
+      });
+    }
+
+    // Tabel
+    const sep = `  ────────── ────────── ────────── ────────── ────────── ────────`;
+    console.log(`  ${sep}`);
+    console.log(`  ${'Token'.padEnd(10)} ${'Entry $'.padStart(10)} ${'Now $'.padStart(10)} ${'PnL%'.padStart(10)} ${'TP $'.padStart(10)} ${'SL $'.padStart(8)}`);
+    console.log(`  ${sep}`);
+    for (const row of rows) {
+      console.log(
+        `  ${row.symbol.padEnd(10)} ` +
+        `${row.entry.toFixed(4).padStart(10)} ` +
+        `${row.current.toFixed(4).padStart(10)} ` +
+        `${(row.pnl).padStart(10)} ` +
+        `${row.tp.toFixed(4).padStart(10)} ` +
+        `${row.sl.toFixed(4).padStart(8)}`
+      );
+    }
+    console.log(`  ${sep}`);
+    console.log(`  ${rows.length} posisi aktif`);
+  };
+
+  await render();
+
+  if (watch) {
+    console.log('  Memantau tiap 30 detik... (Ctrl+C berhenti)');
+    setInterval(render, CONFIG.monitorIntervalSeconds * 1000);
+  }
 }
 
 // ─── CLI Router ──────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
   const command = process.argv[2]?.toLowerCase() || 'trade';
+  const watch = process.argv.includes('--watch') || process.argv.includes('-w');
 
   switch (command) {
     case 'trade':
@@ -137,6 +232,10 @@ async function main(): Promise<void> {
       await cmdSummary();
       break;
 
+    case 'positions':
+      await cmdPositions(watch);
+      break;
+
     case 'clear':
       clearDryRun();
       console.log('✅ Semua record dry-run dihapus');
@@ -149,11 +248,13 @@ async function main(): Promise<void> {
   Usage: npm run <command>
 
   Commands:
-    trade     Jalankan scanner (default)
-    dry       Paksa DRY RUN, jalankan scanner
-    summary   Tampilkan hasil dry-run
-    clear     Hapus semua record dry-run
-    help      Tampilkan ini
+    trade       Jalankan scanner + monitoring
+    dry         Scan sekali (dry run)
+    positions   Lihat posisi aktif
+    positions --watch  Pantau posisi tiap 30 detik
+    summary     Tampilkan hasil dry-run
+    clear       Hapus semua record dry-run
+    help        Tampilkan ini
       `);
       break;
 
